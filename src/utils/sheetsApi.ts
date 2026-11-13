@@ -156,7 +156,7 @@ function postToAppsScript(payload: Record<string, unknown>): Promise<AppsScriptR
       reject(new Error('The Google Sheets request timed out. Please refresh and check whether the change was saved.'));
     }, 20000);
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== iframe.contentWindow || !event.data || event.data.requestId !== requestId) return;
+      if (!event.data || event.data.requestId !== requestId) return;
       if (finished) return;
       finished = true;
       window.clearTimeout(timer);
