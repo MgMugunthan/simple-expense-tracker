@@ -1,0 +1,6 @@
+{
+  "name": "Simple Expense Tracker",
+  "description": "A basic single-page expense tracking web application to enter a total amount, add expenses with images and prices, and track the remaining balance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
