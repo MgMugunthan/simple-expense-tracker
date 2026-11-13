@@ -122,57 +122,93 @@ export function fetchSharedSheetData(): Promise<SharedSheetData> {
   });
 }
 
-function postToAppsScript(payload: Record<string, unknown>): Promise<AppsScriptResponse> {
+function jsonpGet(params: Record<string, string>, timeoutMs = 15000): Promise<any> {
   return new Promise((resolve, reject) => {
-    const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    const iframeName = 'gs_post_' + requestId;
-    const iframe = document.createElement('iframe');
-    iframe.name = iframeName;
-    iframe.style.display = 'none';
-    iframe.setAttribute('aria-hidden', 'true');
-
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = APPS_SCRIPT_URL;
-    form.target = iframeName;
-    form.style.display = 'none';
-
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'payload';
-    input.value = JSON.stringify({ ...payload, requestId });
-    form.appendChild(input);
-
-    let finished = false;
+    const callbackName = '__gsResult_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const win = window as unknown as Record<string, unknown>;
+    const script = document.createElement('script');
+    let settled = false;
     const cleanup = () => {
-      window.removeEventListener('message', onMessage);
-      if (form.parentNode) form.parentNode.removeChild(form);
-      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      window.clearTimeout(timer);
+      script.remove();
+      delete win[callbackName];
     };
     const timer = window.setTimeout(() => {
-      if (finished) return;
-      finished = true;
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(new Error('The Google Sheets request timed out. Please refresh and check whether the change was saved.'));
-    }, 20000);
-    const onMessage = (event: MessageEvent) => {
-      if (!event.data || event.data.requestId !== requestId) return;
-      if (finished) return;
-      finished = true;
-      window.clearTimeout(timer);
+      reject(new Error('Timed out waiting for Google Apps Script. Please try again.'));
+    }, timeoutMs);
+    win[callbackName] = (data: unknown) => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      if (event.data.response && typeof event.data.response.ok === 'boolean') {
-        resolve(event.data.response as AppsScriptResponse);
-      } else {
-        reject(new Error('Received an invalid response from Google Apps Script.'));
-      }
+      resolve(data);
     };
-
-    window.addEventListener('message', onMessage);
-    document.body.appendChild(iframe);
-    document.body.appendChild(form);
-    form.submit();
+    const url = new URL(APPS_SCRIPT_URL);
+    Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+    url.searchParams.set('callback', callbackName);
+    url.searchParams.set('_t', String(Date.now()));
+    script.src = url.toString();
+    script.onerror = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('Could not read the Google Apps Script response.'));
+    };
+    document.head.appendChild(script);
   });
+}
+
+async function postToAppsScript(payload: Record<string, unknown>): Promise<AppsScriptResponse> {
+  const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  const iframeName = 'gs_post_' + requestId;
+  const iframe = document.createElement('iframe');
+  iframe.name = iframeName;
+  iframe.style.display = 'none';
+  iframe.setAttribute('aria-hidden', 'true');
+
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = APPS_SCRIPT_URL;
+  form.target = iframeName;
+  form.style.display = 'none';
+
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.name = 'payload';
+  input.value = JSON.stringify({ ...payload, requestId });
+  form.appendChild(input);
+
+  document.body.appendChild(iframe);
+  document.body.appendChild(form);
+  try {
+    form.submit();
+  } catch (err) {
+    iframe.remove();
+    form.remove();
+    throw err;
+  }
+
+  // Apps Script records the POST result in Script Cache. Poll it through JSONP,
+  // avoiding cross-origin iframe messaging and CORS restrictions.
+  const deadline = Date.now() + 25000;
+  try {
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      const result = await jsonpGet({ action: 'getResult', requestId }, 8000);
+      if (result && result.ok === true && result.data && result.data.ready === true) {
+        return result.data.response as AppsScriptResponse;
+      }
+      if (result && result.ok === false && result.error) {
+        throw new Error(String(result.error));
+      }
+    }
+    throw new Error('The Google Sheets request timed out. Please refresh and try again.');
+  } finally {
+    iframe.remove();
+    form.remove();
+  }
 }
 
 export async function verifyAdminPassword(password: string): Promise<void> {
